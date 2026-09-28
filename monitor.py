@@ -19,6 +19,8 @@ PRODUCTS = {
         "out_of_stock_words": [
             "esgotado",
             "temporariamente esgotado",
+            "sem stock",
+            "fora de stock",
         ],
     },
 
@@ -39,7 +41,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 
 # ============================================================
-# BROWSER-LIKE HEADERS
+# HEADERS
 # ============================================================
 
 HEADERS = {
@@ -62,6 +64,7 @@ HEADERS = {
 # ============================================================
 
 def send_telegram(message):
+
     response = curl_requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         data={
@@ -80,13 +83,16 @@ def send_telegram(message):
 # ============================================================
 
 def load_state():
+
     if not os.path.exists(STATE_FILE):
+
         return {
             "products": {},
             "last_heartbeat": None,
         }
 
     try:
+
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
 
@@ -96,6 +102,7 @@ def load_state():
         return state
 
     except Exception:
+
         return {
             "products": {},
             "last_heartbeat": None,
@@ -103,7 +110,9 @@ def load_state():
 
 
 def save_state(state):
+
     with open(STATE_FILE, "w") as f:
+
         json.dump(
             state,
             f,
@@ -112,11 +121,161 @@ def save_state(state):
 
 
 # ============================================================
-# STOCK CHECK
+# EL CORTE INGLES SPECIFIC STOCK DETECTION
+# ============================================================
+
+def check_el_corte_ingles(soup, text):
+
+    # --------------------------------------------------------
+    # Explicit out-of-stock indicators
+    # --------------------------------------------------------
+
+    out_of_stock_words = [
+        "esgotado",
+        "temporariamente esgotado",
+        "sem stock",
+        "fora de stock",
+        "não disponível",
+        "indisponível",
+    ]
+
+    for word in out_of_stock_words:
+
+        if word in text:
+
+            print(
+                f"El Corte Inglés: "
+                f"found out-of-stock text: '{word}'"
+            )
+
+            return False
+
+
+    # --------------------------------------------------------
+    # Look for actual purchase/cart elements
+    # --------------------------------------------------------
+
+    purchase_words = [
+        "adicionar ao carrinho",
+        "adicionar",
+        "comprar",
+        "comprar agora",
+        "add to cart",
+        "add to basket",
+        "buy now",
+    ]
+
+
+    # Check visible page text
+    for word in purchase_words:
+
+        if word in text:
+
+            print(
+                f"El Corte Inglés: "
+                f"found purchase text: '{word}'"
+            )
+
+            return True
+
+
+    # --------------------------------------------------------
+    # Check buttons
+    # --------------------------------------------------------
+
+    buttons = soup.find_all(
+        ["button", "a", "input"]
+    )
+
+    for element in buttons:
+
+        element_text = (
+            element.get_text(
+                " ",
+                strip=True
+            )
+            .lower()
+        )
+
+        value = (
+            element.get("value", "")
+            .lower()
+        )
+
+        aria_label = (
+            element.get(
+                "aria-label",
+                ""
+            )
+            .lower()
+        )
+
+        combined = (
+            element_text
+            + " "
+            + value
+            + " "
+            + aria_label
+        )
+
+        for word in purchase_words:
+
+            if word in combined:
+
+                print(
+                    f"El Corte Inglés: "
+                    f"found purchase element: "
+                    f"'{word}'"
+                )
+
+                return True
+
+
+    # --------------------------------------------------------
+    # Check structured data / availability
+    # --------------------------------------------------------
+
+    page_html = str(soup).lower()
+
+    availability_indicators = [
+        '"availability":"https://schema.org/instock"',
+        '"availability": "https://schema.org/instock"',
+        "instock",
+        "in stock",
+    ]
+
+    for indicator in availability_indicators:
+
+        if indicator in page_html:
+
+            print(
+                "El Corte Inglés: "
+                f"found availability indicator: '{indicator}'"
+            )
+
+            return True
+
+
+    # --------------------------------------------------------
+    # Nothing conclusive
+    # --------------------------------------------------------
+
+    print(
+        "El Corte Inglés: "
+        "stock status could not be determined"
+    )
+
+    return None
+
+
+# ============================================================
+# GENERAL STOCK CHECK
 # ============================================================
 
 def check_stock(product_name, product):
 
+    print()
+    print("=" * 60)
     print(f"Checking: {product_name}")
     print(f"URL: {product['url']}")
 
@@ -147,7 +306,19 @@ def check_stock(product_name, product):
 
 
     # ========================================================
-    # OUT OF STOCK
+    # EL CORTE INGLES
+    # ========================================================
+
+    if product_name == "El Corte Inglés 30th Anniversary ETB":
+
+        return check_el_corte_ingles(
+            soup,
+            text,
+        )
+
+
+    # ========================================================
+    # GENERAL STORES
     # ========================================================
 
     out_of_stock = any(
@@ -155,10 +326,6 @@ def check_stock(product_name, product):
         for word in product["out_of_stock_words"]
     )
 
-
-    # ========================================================
-    # PURCHASE OPTIONS
-    # ========================================================
 
     purchase_words = [
         "adicionar ao carrinho",
@@ -176,23 +343,33 @@ def check_stock(product_name, product):
     )
 
 
-    # ========================================================
-    # RESULT
-    # ========================================================
+    if out_of_stock:
 
-    in_stock = (
-        not out_of_stock
-        and has_purchase_option
-    )
+        print(
+            f"{product_name}: "
+            "OUT OF STOCK detected"
+        )
 
+        return False
+
+
+    if has_purchase_option:
+
+        print(
+            f"{product_name}: "
+            "PURCHASE OPTION detected"
+        )
+
+        return True
+
+
+    # Nothing conclusive
     print(
         f"{product_name}: "
-        f"IN_STOCK={in_stock}, "
-        f"OUT_OF_STOCK={out_of_stock}, "
-        f"PURCHASE_OPTION={has_purchase_option}"
+        "stock status could not be determined"
     )
 
-    return in_stock
+    return None
 
 
 # ============================================================
@@ -202,6 +379,7 @@ def check_stock(product_name, product):
 def should_send_heartbeat(last_heartbeat):
 
     if not last_heartbeat:
+
         return True
 
     try:
@@ -250,8 +428,7 @@ def main():
             )
 
             old_stock = state["products"].get(
-                product_name,
-                False,
+                product_name
             )
 
 
@@ -266,7 +443,7 @@ def main():
             # BACK IN STOCK
             # =================================================
 
-            if new_stock and not old_stock:
+            if new_stock is True and old_stock is not True:
 
                 print(
                     f"🚨 BACK IN STOCK: "
@@ -281,17 +458,32 @@ def main():
 
 
             # =================================================
-            # SAVE STATUS
+            # SAVE ONLY A CONFIRMED RESULT
             # =================================================
 
-            state["products"][product_name] = new_stock
+            if new_stock is not None:
+
+                state["products"][product_name] = (
+                    new_stock
+                )
 
 
-            status = (
-                "🟢 IN STOCK"
-                if new_stock
-                else "🔴 OUT OF STOCK"
-            )
+            # =================================================
+            # HEARTBEAT STATUS
+            # =================================================
+
+            if new_stock is True:
+
+                status = "🟢 IN STOCK"
+
+            elif new_stock is False:
+
+                status = "🔴 OUT OF STOCK"
+
+            else:
+
+                status = "⚠️ UNKNOWN"
+
 
             heartbeat_status.append(
                 f"{product_name}: {status}"
@@ -311,7 +503,7 @@ def main():
 
 
     # ========================================================
-    # HEARTBEAT
+    # HEARTBEAT EVERY 4 HOURS
     # ========================================================
 
     last_heartbeat = state.get(
@@ -339,7 +531,9 @@ def main():
                 now.isoformat()
             )
 
-            print("Heartbeat sent.")
+            print(
+                "Heartbeat sent."
+            )
 
         except Exception as e:
 
@@ -354,7 +548,10 @@ def main():
 
     save_state(state)
 
-    print("State saved successfully.")
+    print()
+    print(
+        "State saved successfully."
+    )
 
 
 # ============================================================
@@ -362,4 +559,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
