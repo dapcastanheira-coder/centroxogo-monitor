@@ -201,7 +201,7 @@ def check_stock(product):
 # ============================================================
 
 def should_send_heartbeat(last_heartbeat):
-    if not last_heartbeat:
+#if not last_heartbeat:
         return True
 
     try:
