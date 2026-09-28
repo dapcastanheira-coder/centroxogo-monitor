@@ -21,6 +21,8 @@ PRODUCTS = {
             "temporariamente esgotado",
             "sem stock",
             "fora de stock",
+            "indisponível",
+            "não disponível",
         ],
     },
 
@@ -85,7 +87,6 @@ def send_telegram(message):
 def load_state():
 
     if not os.path.exists(STATE_FILE):
-
         return {
             "products": {},
             "last_heartbeat": None,
@@ -112,7 +113,6 @@ def load_state():
 def save_state(state):
 
     with open(STATE_FILE, "w") as f:
-
         json.dump(
             state,
             f,
@@ -121,13 +121,13 @@ def save_state(state):
 
 
 # ============================================================
-# EL CORTE INGLES SPECIFIC STOCK DETECTION
+# EL CORTE INGLES PORTUGUESE STOCK DETECTION
 # ============================================================
 
 def check_el_corte_ingles(soup, text):
 
     # --------------------------------------------------------
-    # Explicit out-of-stock indicators
+    # Portuguese OUT OF STOCK indicators
     # --------------------------------------------------------
 
     out_of_stock_words = [
@@ -135,8 +135,10 @@ def check_el_corte_ingles(soup, text):
         "temporariamente esgotado",
         "sem stock",
         "fora de stock",
-        "não disponível",
         "indisponível",
+        "não disponível",
+        "produto esgotado",
+        "artigo esgotado",
     ]
 
     for word in out_of_stock_words:
@@ -144,15 +146,16 @@ def check_el_corte_ingles(soup, text):
         if word in text:
 
             print(
-                f"El Corte Inglés: "
-                f"found out-of-stock text: '{word}'"
+                "El Corte Inglés: "
+                f"Portuguese out-of-stock indicator found: "
+                f"'{word}'"
             )
 
             return False
 
 
     # --------------------------------------------------------
-    # Look for actual purchase/cart elements
+    # Portuguese PURCHASE indicators
     # --------------------------------------------------------
 
     purchase_words = [
@@ -160,34 +163,32 @@ def check_el_corte_ingles(soup, text):
         "adicionar",
         "comprar",
         "comprar agora",
-        "add to cart",
-        "add to basket",
-        "buy now",
     ]
 
 
-    # Check visible page text
+    # Check page text
     for word in purchase_words:
 
         if word in text:
 
             print(
-                f"El Corte Inglés: "
-                f"found purchase text: '{word}'"
+                "El Corte Inglés: "
+                f"Portuguese purchase indicator found: "
+                f"'{word}'"
             )
 
             return True
 
 
     # --------------------------------------------------------
-    # Check buttons
+    # Check buttons and links
     # --------------------------------------------------------
 
-    buttons = soup.find_all(
+    elements = soup.find_all(
         ["button", "a", "input"]
     )
 
-    for element in buttons:
+    for element in elements:
 
         element_text = (
             element.get_text(
@@ -198,7 +199,10 @@ def check_el_corte_ingles(soup, text):
         )
 
         value = (
-            element.get("value", "")
+            element.get(
+                "value",
+                ""
+            )
             .lower()
         )
 
@@ -210,21 +214,41 @@ def check_el_corte_ingles(soup, text):
             .lower()
         )
 
+        title = (
+            element.get(
+                "title",
+                ""
+            )
+            .lower()
+        )
+
+        element_classes = " ".join(
+            element.get(
+                "class",
+                []
+            )
+        ).lower()
+
         combined = (
             element_text
             + " "
             + value
             + " "
             + aria_label
+            + " "
+            + title
+            + " "
+            + element_classes
         )
+
 
         for word in purchase_words:
 
             if word in combined:
 
                 print(
-                    f"El Corte Inglés: "
-                    f"found purchase element: "
+                    "El Corte Inglés: "
+                    f"Purchase element found: "
                     f"'{word}'"
                 )
 
@@ -232,28 +256,105 @@ def check_el_corte_ingles(soup, text):
 
 
     # --------------------------------------------------------
-    # Check structured data / availability
+    # Portuguese availability indicators
     # --------------------------------------------------------
 
-    page_html = str(soup).lower()
-
-    availability_indicators = [
-        '"availability":"https://schema.org/instock"',
-        '"availability": "https://schema.org/instock"',
-        "instock",
-        "in stock",
+    availability_words = [
+        "em stock",
+        "disponível",
+        "disponível online",
+        "disponível para entrega",
+        "disponível para envio",
     ]
 
-    for indicator in availability_indicators:
+    for word in availability_words:
 
-        if indicator in page_html:
+        if word in text:
 
             print(
                 "El Corte Inglés: "
-                f"found availability indicator: '{indicator}'"
+                f"Portuguese availability indicator found: "
+                f"'{word}'"
+            )
+
+            # "disponível" by itself is not enough to
+            # guarantee purchase, so only use stronger
+            # availability phrases here.
+            if word != "disponível":
+                return True
+
+
+    # --------------------------------------------------------
+    # Structured data
+    # --------------------------------------------------------
+
+    html = str(soup).lower()
+
+    structured_stock_indicators = [
+        '"availability":"https://schema.org/instock"',
+        '"availability": "https://schema.org/instock"',
+        "schema.org/instock",
+        '"availability":"instock"',
+        '"availability": "instock"',
+    ]
+
+    for indicator in structured_stock_indicators:
+
+        if indicator in html:
+
+            print(
+                "El Corte Inglés: "
+                f"Structured IN STOCK indicator found: "
+                f"'{indicator}'"
             )
 
             return True
+
+
+    # --------------------------------------------------------
+    # Product availability attributes
+    # --------------------------------------------------------
+
+    availability_elements = soup.find_all(
+        attrs={
+            "itemprop": "availability"
+        }
+    )
+
+    for element in availability_elements:
+
+        value = (
+            element.get(
+                "content",
+                ""
+            )
+            + " "
+            + element.get_text(
+                " ",
+                strip=True
+            )
+        ).lower()
+
+        print(
+            "El Corte Inglés: "
+            f"Availability attribute found: '{value}'"
+        )
+
+        if (
+            "instock" in value
+            or "in stock" in value
+            or "disponível" in value
+        ):
+
+            return True
+
+        if (
+            "outofstock" in value
+            or "out of stock" in value
+            or "esgotado" in value
+        ):
+
+            return False
 
 
     # --------------------------------------------------------
@@ -326,7 +427,6 @@ def check_stock(product_name, product):
         for word in product["out_of_stock_words"]
     )
 
-
     purchase_words = [
         "adicionar ao carrinho",
         "adicionar",
@@ -363,7 +463,6 @@ def check_stock(product_name, product):
         return True
 
 
-    # Nothing conclusive
     print(
         f"{product_name}: "
         "stock status could not be determined"
@@ -379,7 +478,6 @@ def check_stock(product_name, product):
 def should_send_heartbeat(last_heartbeat):
 
     if not last_heartbeat:
-
         return True
 
     try:
@@ -431,7 +529,6 @@ def main():
                 product_name
             )
 
-
             print(
                 f"{product_name}: "
                 f"Current={new_stock}, "
@@ -440,7 +537,7 @@ def main():
 
 
             # =================================================
-            # BACK IN STOCK
+            # BACK IN STOCK ALERT
             # =================================================
 
             if new_stock is True and old_stock is not True:
@@ -458,7 +555,7 @@ def main():
 
 
             # =================================================
-            # SAVE ONLY A CONFIRMED RESULT
+            # ONLY SAVE CONFIRMED RESULTS
             # =================================================
 
             if new_stock is not None:
@@ -559,5 +656,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
