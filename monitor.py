@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime, timezone
 import requests
 from bs4 import BeautifulSoup
 
@@ -34,13 +35,25 @@ def send_telegram(message):
 
 def load_state():
     if not os.path.exists(STATE_FILE):
-        return {"in_stock": False}
+        return {
+            "in_stock": False,
+            "last_heartbeat": None
+        }
 
     try:
         with open(STATE_FILE, "r") as f:
-            return json.load(f)
+            state = json.load(f)
+
+        state.setdefault("in_stock", False)
+        state.setdefault("last_heartbeat", None)
+
+        return state
+
     except Exception:
-        return {"in_stock": False}
+        return {
+            "in_stock": False,
+            "last_heartbeat": None
+        }
 
 
 def save_state(state):
@@ -61,10 +74,9 @@ def check_stock():
 
     text = soup.get_text(" ", strip=True).lower()
 
-    # Centroxogo currently uses "Esgotado" for out of stock.
+    # Centroxogo uses "Esgotado" when the product is out of stock.
     out_of_stock = "esgotado" in text
 
-    # Look for typical purchase indicators.
     purchase_words = [
         "adicionar ao carrinho",
         "comprar",
@@ -81,17 +93,41 @@ def check_stock():
     return in_stock
 
 
+def should_send_heartbeat(last_heartbeat):
+    if not last_heartbeat:
+        return True
+
+    try:
+        last_time = datetime.fromisoformat(last_heartbeat)
+        now = datetime.now(timezone.utc)
+
+        hours_since = (
+            now - last_time
+        ).total_seconds() / 3600
+
+        return hours_since >= 4
+
+    except Exception:
+        return True
+
+
 def main():
-    old_state = load_state()
-    old_stock = old_state.get("in_stock", False)
+    state = load_state()
+
+    old_stock = state.get("in_stock", False)
 
     try:
         new_stock = check_stock()
 
+        now = datetime.now(timezone.utc)
+
         print(f"Current stock: {new_stock}")
         print(f"Previous stock: {old_stock}")
 
-        # Only notify when it changes from OUT -> IN.
+        # ==========================================
+        # BACK IN STOCK ALERT
+        # ==========================================
+
         if new_stock and not old_stock:
             send_telegram(
                 "🚨 CENTROXOGO BACK IN STOCK!\n\n"
@@ -99,7 +135,32 @@ def main():
                 f"{URL}"
             )
 
-        save_state({"in_stock": new_stock})
+        # ==========================================
+        # HEARTBEAT - EVERY 4 HOURS
+        # ==========================================
+
+        last_heartbeat = state.get("last_heartbeat")
+
+        if should_send_heartbeat(last_heartbeat):
+
+            status = "🟢 IN STOCK" if new_stock else "🔴 OUT OF STOCK"
+
+            send_telegram(
+                "💓 Centroxogo monitor heartbeat\n\n"
+                f"Status: {status}\n"
+                f"Checked: {now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                "Monitor is running normally."
+            )
+
+            state["last_heartbeat"] = now.isoformat()
+
+        # ==========================================
+        # SAVE CURRENT STATE
+        # ==========================================
+
+        state["in_stock"] = new_stock
+
+        save_state(state)
 
     except Exception as e:
         print(f"ERROR: {e}")
