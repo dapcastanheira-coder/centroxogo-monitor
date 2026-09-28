@@ -2,16 +2,16 @@ import os
 import json
 from datetime import datetime, timezone
 
-import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from curl_cffi import requests as curl_requests
 
 
 PRODUCTS = {
     "Centroxogo Booster Bundle": {
         "url": "https://www.centroxogo.pt/pokemon-tcg-30th-celebration-booster-bundle-003pc10451101.html",
-        "out_of_stock_words": ["esgotado"],
+        "out_of_stock_words": [
+            "esgotado",
+        ],
     },
 
     "El Corte Inglés 30th Anniversary ETB": {
@@ -38,41 +38,23 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 
+# ============================================================
+# BROWSER-LIKE HEADERS
+# ============================================================
+
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 Mobile/15E148 "
-        "Safari/604.1"
-    ),
     "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,*/*;q=0.8"
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,image/avif,image/webp,"
+        "image/apng,*/*;q=0.8"
     ),
-    "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Connection": "keep-alive",
+    "Accept-Language": (
+        "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+    ),
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
 }
-
-
-# ============================================================
-# HTTP SESSION WITH RETRIES
-# ============================================================
-
-session = requests.Session()
-
-retry_strategy = Retry(
-    total=3,
-    connect=3,
-    read=3,
-    backoff_factor=2,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"],
-)
-
-adapter = HTTPAdapter(
-    max_retries=retry_strategy
-)
-
-session.mount("https://", adapter)
-session.mount("http://", adapter)
 
 
 # ============================================================
@@ -80,15 +62,14 @@ session.mount("http://", adapter)
 # ============================================================
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    response = requests.post(
-        url,
+    response = curl_requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         data={
             "chat_id": CHAT_ID,
             "text": message,
         },
         timeout=30,
+        impersonate="chrome",
     )
 
     response.raise_for_status()
@@ -134,16 +115,22 @@ def save_state(state):
 # STOCK CHECK
 # ============================================================
 
-def check_stock(product):
-    print(f"Checking: {product['url']}")
+def check_stock(product_name, product):
 
-    response = session.get(
+    print(f"Checking: {product_name}")
+    print(f"URL: {product['url']}")
+
+    response = curl_requests.get(
         product["url"],
         headers=HEADERS,
+        timeout=60,
+        impersonate="chrome",
+        allow_redirects=True,
+    )
 
-        # 15 seconds to connect / TLS handshake
-        # 60 seconds to receive the response
-        timeout=(15, 60),
+    print(
+        f"{product_name}: "
+        f"HTTP {response.status_code}"
     )
 
     response.raise_for_status()
@@ -158,25 +145,29 @@ def check_stock(product):
         strip=True,
     ).lower()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # OUT OF STOCK
-    # --------------------------------------------------------
+    # ========================================================
 
     out_of_stock = any(
         word.lower() in text
         for word in product["out_of_stock_words"]
     )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # PURCHASE OPTIONS
-    # --------------------------------------------------------
+    # ========================================================
 
     purchase_words = [
         "adicionar ao carrinho",
         "adicionar",
         "comprar",
+        "comprar agora",
         "add to cart",
         "add to basket",
+        "buy now",
     ]
 
     has_purchase_option = any(
@@ -184,13 +175,21 @@ def check_stock(product):
         for word in purchase_words
     )
 
-    # --------------------------------------------------------
-    # FINAL STOCK RESULT
-    # --------------------------------------------------------
+
+    # ========================================================
+    # RESULT
+    # ========================================================
 
     in_stock = (
         not out_of_stock
         and has_purchase_option
+    )
+
+    print(
+        f"{product_name}: "
+        f"IN_STOCK={in_stock}, "
+        f"OUT_OF_STOCK={out_of_stock}, "
+        f"PURCHASE_OPTION={has_purchase_option}"
     )
 
     return in_stock
@@ -201,10 +200,12 @@ def check_stock(product):
 # ============================================================
 
 def should_send_heartbeat(last_heartbeat):
+
     if not last_heartbeat:
         return True
 
     try:
+
         last_time = datetime.fromisoformat(
             last_heartbeat
         )
@@ -218,8 +219,8 @@ def should_send_heartbeat(last_heartbeat):
         return hours_since >= 4
 
     except Exception:
-        return True
 
+        return True
 
 
 # ============================================================
@@ -236,19 +237,23 @@ def main():
 
 
     # ========================================================
-    # CHECK ALL PRODUCTS
+    # CHECK PRODUCTS
     # ========================================================
 
     for product_name, product in PRODUCTS.items():
 
         try:
 
-            new_stock = check_stock(product)
+            new_stock = check_stock(
+                product_name,
+                product,
+            )
 
             old_stock = state["products"].get(
                 product_name,
                 False,
             )
+
 
             print(
                 f"{product_name}: "
@@ -258,7 +263,7 @@ def main():
 
 
             # =================================================
-            # BACK IN STOCK ALERT
+            # BACK IN STOCK
             # =================================================
 
             if new_stock and not old_stock:
@@ -276,7 +281,7 @@ def main():
 
 
             # =================================================
-            # SAVE CURRENT STATUS
+            # SAVE STATUS
             # =================================================
 
             state["products"][product_name] = new_stock
@@ -295,11 +300,6 @@ def main():
 
         except Exception as e:
 
-            # -------------------------------------------------
-            # IMPORTANT:
-            # A failed website check DOES NOT CRASH THE SCRIPT
-            # -------------------------------------------------
-
             print(
                 f"ERROR checking "
                 f"{product_name}: {e}"
@@ -311,7 +311,7 @@ def main():
 
 
     # ========================================================
-    # HEARTBEAT EVERY 4 HOURS
+    # HEARTBEAT
     # ========================================================
 
     last_heartbeat = state.get(
@@ -338,6 +338,8 @@ def main():
             state["last_heartbeat"] = (
                 now.isoformat()
             )
+
+            print("Heartbeat sent.")
 
         except Exception as e:
 
