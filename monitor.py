@@ -202,23 +202,8 @@ def check_stock(product):
 
 def should_send_heartbeat(last_heartbeat):
 #if not last_heartbeat:
-        return True
+    return True
 
-    try:
-        last_time = datetime.fromisoformat(
-            last_heartbeat
-        )
-
-        now = datetime.now(timezone.utc)
-
-        hours_since = (
-            now - last_time
-        ).total_seconds() / 3600
-
-        return hours_since >= 4
-
-    except Exception:
-        return True
 
 
 # ============================================================
