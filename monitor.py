@@ -1,8 +1,12 @@
 import os
 import json
 from datetime import datetime, timezone
+
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 
 PRODUCTS = {
     "Centroxogo Booster Bundle": {
@@ -12,26 +16,68 @@ PRODUCTS = {
 
     "El Corte Inglés 30th Anniversary ETB": {
         "url": "https://www.elcorteingles.pt/brinquedos/A202042813-30-caixa-elite-trainer-comemoracao-do-30-aniversario-do-tcg-ingles-pokemon-bandai",
-        "out_of_stock_words": ["esgotado", "temporariamente esgotado"],
+        "out_of_stock_words": [
+            "esgotado",
+            "temporariamente esgotado",
+        ],
     },
-    
+
     "Toysrus 30th Anniversary Booster Bundle": {
         "url": "https://www.toysrus.pt/Pok%C3%A9mon-30%C2%BA-Anivers%C3%A1rio-Booster-Bundle-%28Ingl%C3%AAs%29/p/K1108953",
-        "out_of_stock_words": ["esgotado", "temporariamente esgotado"],
-    }
+        "out_of_stock_words": [
+            "esgotado",
+            "temporariamente esgotado",
+        ],
+    },
 }
+
 
 STATE_FILE = "state.json"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
+
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 Mobile/15E148 Safari/604.1"
-    )
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 Mobile/15E148 "
+        "Safari/604.1"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,*/*;q=0.8"
+    ),
+    "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Connection": "keep-alive",
 }
 
+
+# ============================================================
+# HTTP SESSION WITH RETRIES
+# ============================================================
+
+session = requests.Session()
+
+retry_strategy = Retry(
+    total=3,
+    connect=3,
+    read=3,
+    backoff_factor=2,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"],
+)
+
+adapter = HTTPAdapter(
+    max_retries=retry_strategy
+)
+
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+
+
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -48,11 +94,15 @@ def send_telegram(message):
     response.raise_for_status()
 
 
+# ============================================================
+# STATE
+# ============================================================
+
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {
             "products": {},
-            "last_heartbeat": None
+            "last_heartbeat": None,
         }
 
     try:
@@ -67,33 +117,59 @@ def load_state():
     except Exception:
         return {
             "products": {},
-            "last_heartbeat": None
+            "last_heartbeat": None,
         }
 
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(
+            state,
+            f,
+            indent=2,
+        )
 
+
+# ============================================================
+# STOCK CHECK
+# ============================================================
 
 def check_stock(product):
-    response = requests.get(
+    print(f"Checking: {product['url']}")
+
+    response = session.get(
         product["url"],
         headers=HEADERS,
-        timeout=30,
+
+        # 15 seconds to connect / TLS handshake
+        # 60 seconds to receive the response
+        timeout=(15, 60),
     )
 
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser",
+    )
 
-    text = soup.get_text(" ", strip=True).lower()
+    text = soup.get_text(
+        " ",
+        strip=True,
+    ).lower()
 
-    # Check for explicit out-of-stock messages
+    # --------------------------------------------------------
+    # OUT OF STOCK
+    # --------------------------------------------------------
+
     out_of_stock = any(
-        word in text
+        word.lower() in text
         for word in product["out_of_stock_words"]
     )
+
+    # --------------------------------------------------------
+    # PURCHASE OPTIONS
+    # --------------------------------------------------------
 
     purchase_words = [
         "adicionar ao carrinho",
@@ -108,17 +184,31 @@ def check_stock(product):
         for word in purchase_words
     )
 
-    in_stock = not out_of_stock and has_purchase_option
+    # --------------------------------------------------------
+    # FINAL STOCK RESULT
+    # --------------------------------------------------------
+
+    in_stock = (
+        not out_of_stock
+        and has_purchase_option
+    )
 
     return in_stock
 
+
+# ============================================================
+# HEARTBEAT
+# ============================================================
 
 def should_send_heartbeat(last_heartbeat):
     if not last_heartbeat:
         return True
 
     try:
-        last_time = datetime.fromisoformat(last_heartbeat)
+        last_time = datetime.fromisoformat(
+            last_heartbeat
+        )
+
         now = datetime.now(timezone.utc)
 
         hours_since = (
@@ -131,21 +221,32 @@ def should_send_heartbeat(last_heartbeat):
         return True
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
+
     state = load_state()
 
     now = datetime.now(timezone.utc)
 
     heartbeat_status = []
 
+
+    # ========================================================
+    # CHECK ALL PRODUCTS
+    # ========================================================
+
     for product_name, product in PRODUCTS.items():
 
         try:
+
             new_stock = check_stock(product)
 
             old_stock = state["products"].get(
                 product_name,
-                False
+                False,
             )
 
             print(
@@ -154,11 +255,17 @@ def main():
                 f"Previous={old_stock}"
             )
 
-            # ==========================================
+
+            # =================================================
             # BACK IN STOCK ALERT
-            # ==========================================
+            # =================================================
 
             if new_stock and not old_stock:
+
+                print(
+                    f"🚨 BACK IN STOCK: "
+                    f"{product_name}"
+                )
 
                 send_telegram(
                     "🚨 BACK IN STOCK!\n\n"
@@ -166,8 +273,13 @@ def main():
                     f"{product['url']}"
                 )
 
-            # Save current status
+
+            # =================================================
+            # SAVE CURRENT STATUS
+            # =================================================
+
             state["products"][product_name] = new_stock
+
 
             status = (
                 "🟢 IN STOCK"
@@ -179,7 +291,13 @@ def main():
                 f"{product_name}: {status}"
             )
 
+
         except Exception as e:
+
+            # -------------------------------------------------
+            # IMPORTANT:
+            # A failed website check DOES NOT CRASH THE SCRIPT
+            # -------------------------------------------------
 
             print(
                 f"ERROR checking "
@@ -190,32 +308,55 @@ def main():
                 f"{product_name}: ⚠️ CHECK ERROR"
             )
 
-    # ==========================================
-    # HEARTBEAT - EVERY 4 HOURS
-    # ==========================================
 
-    last_heartbeat = state.get("last_heartbeat")
+    # ========================================================
+    # HEARTBEAT EVERY 4 HOURS
+    # ========================================================
 
-    if should_send_heartbeat(last_heartbeat):
+    last_heartbeat = state.get(
+        "last_heartbeat"
+    )
+
+    if should_send_heartbeat(
+        last_heartbeat
+    ):
 
         message = (
             "💓 Pokémon stock monitor heartbeat\n\n"
             + "\n".join(heartbeat_status)
             + "\n\n"
-            f"Checked: {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"Checked: "
+            f"{now.strftime('%Y-%m-%d %H:%M UTC')}\n"
             "Monitor is running normally."
         )
 
-        send_telegram(message)
+        try:
 
-        state["last_heartbeat"] = now.isoformat()
+            send_telegram(message)
 
-    # ==========================================
+            state["last_heartbeat"] = (
+                now.isoformat()
+            )
+
+        except Exception as e:
+
+            print(
+                f"ERROR sending heartbeat: {e}"
+            )
+
+
+    # ========================================================
     # SAVE STATE
-    # ==========================================
+    # ========================================================
 
     save_state(state)
 
+    print("State saved successfully.")
+
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
