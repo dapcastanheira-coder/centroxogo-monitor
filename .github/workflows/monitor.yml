@@ -2,7 +2,7 @@ name: Centroxogo Stock Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/6 * * * *"
   workflow_dispatch:
 
 jobs:
