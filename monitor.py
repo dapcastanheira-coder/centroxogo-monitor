@@ -13,6 +13,11 @@ PRODUCTS = {
     "El Corte Inglés 30th Anniversary ETB": {
         "url": "https://www.elcorteingles.pt/brinquedos/A202042813-30-caixa-elite-trainer-comemoracao-do-30-aniversario-do-tcg-ingles-pokemon-bandai",
         "out_of_stock_words": ["esgotado", "temporariamente esgotado"],
+    },
+    
+    "Toysrus 30th Anniversary Booster Bundle": {
+        "url": "https://www.toysrus.pt/Pok%C3%A9mon-30%C2%BA-Anivers%C3%A1rio-Booster-Bundle-%28Ingl%C3%AAs%29/p/K1108953",
+        "out_of_stock_words": ["esgotado", "temporariamente esgotado"],
     }
 }
 
